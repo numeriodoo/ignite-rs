@@ -28,23 +28,26 @@ pub fn derive_ignite_obj(item: proc_macro::TokenStream) -> proc_macro::TokenStre
 }
 
 
+
+
 #[proc_macro_attribute]
 pub fn type_id(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let type_id = syn::parse_macro_input!(args as syn::LitInt);
     let input = syn::parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
 
-    // Create the output that includes both the original struct and the type_id implementation
+    // Only generate the impl block, not the struct again
     proc_macro::TokenStream::from(quote! {
-        #[derive(Debug)]
         #input
 
-        impl #input.ident {
+        impl #name {
             pub const fn type_id() -> i32 {
                 #type_id
             }
         }
     })
 }
+
 
 
 /// Implements ignite_rs::WritableType trait
