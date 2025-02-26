@@ -199,9 +199,31 @@ fn get_schema_id(fields: &FieldsNamed) -> i32 {
         })
 }
 
+
+#[proc_macro_attribute]
+pub fn ignite_type_id(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let type_id = syn::parse_macro_input!(args as syn::LitInt);
+    let mut input = syn::parse_macro_input!(input as DeriveInput);
+
+    // Store the type ID in an attribute that can be read by the derive macro
+    input.attrs.push(syn::parse_quote!(#[type_id = #type_id]));
+
+    proc_macro::TokenStream::from(quote!(#input))
+}
+
+
 /// Java-like hashcode of type's name
-fn get_type_id(ident: &Ident) -> i32 {
-    string_to_java_hashcode(&ident.to_string())
+fn get_type_id(input: &DeriveInput) -> i32 {
+    // First check for explicit type ID attribute
+    for attr in &input.attrs {
+        if attr.path().is_ident("type_id") {
+            if let Ok(lit) = attr.parse_args::<syn::LitInt>() {
+                return lit.base10_parse().unwrap_or_else(|_| string_to_java_hashcode(&input.ident.to_string()));
+            }
+        }
+    }
+    // Fall back to computing hash of type name
+    string_to_java_hashcode(&input.ident.to_string())
 }
 
 /// FNV1 hash offset basis
