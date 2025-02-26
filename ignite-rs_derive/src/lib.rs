@@ -202,7 +202,7 @@ fn get_schema_id(fields: &FieldsNamed) -> i32 {
 
 #[proc_macro_attribute]
 /// Java-like hashcode of type's name
-fn get_type_id(input: &DeriveInput) -> i32 {
+pub fn get_type_id(input: &DeriveInput) -> i32 {
     // First check for explicit type ID attribute
     for attr in &input.attrs {
         if attr.path.is_ident("type_id") {  // Access path directly as a field
