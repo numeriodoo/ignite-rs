@@ -217,7 +217,7 @@ fn get_type_id(input: &DeriveInput) -> i32 {
 fn get_type_id(input: &DeriveInput) -> i32 {
     // First check for explicit type ID attribute
     for attr in &input.attrs {
-        if attr.path().is_ident("type_id") {
+        if attr.path.is_ident("type_id") {  // Access path directly as a field
             if let Ok(lit) = attr.parse_args::<syn::LitInt>() {
                 return lit.base10_parse().unwrap_or_else(|_| string_to_java_hashcode(&input.ident.to_string()));
             }
@@ -226,6 +226,7 @@ fn get_type_id(input: &DeriveInput) -> i32 {
     // Fall back to computing hash of type name
     string_to_java_hashcode(&input.ident.to_string())
 }
+
 
 /// FNV1 hash offset basis
 const FNV1_OFFSET_BASIS: i32 = 0x811C_9DC5_u32 as i32;
