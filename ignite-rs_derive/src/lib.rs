@@ -201,18 +201,6 @@ fn get_schema_id(fields: &FieldsNamed) -> i32 {
 
 
 #[proc_macro_attribute]
-fn get_type_id(input: &DeriveInput) -> i32 {
-    // First check for explicit type ID attribute
-    for attr in &input.attrs {
-        if attr.path.is_ident("type_id") {  // Remove the () call
-            if let Ok(lit) = attr.parse_args::<syn::LitInt>() {
-                return lit.base10_parse().unwrap_or_else(|_| string_to_java_hashcode(&input.ident.to_string()));
-            }
-        }
-    }
-    // Fall back to computing hash of type name
-    string_to_java_hashcode(&input.ident.to_string())
-}
 /// Java-like hashcode of type's name
 fn get_type_id(input: &DeriveInput) -> i32 {
     // First check for explicit type ID attribute
