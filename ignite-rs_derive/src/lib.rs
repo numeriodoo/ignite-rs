@@ -3,20 +3,34 @@ use quote::*;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Fields, FieldsNamed};
 
-#[proc_macro_derive(IgniteObj)]
+/// FNV1 hash offset basis
+const FNV1_OFFSET_BASIS: i32 = 0x811C_9DC5_u32 as i32;
+/// FNV1 hash prime
+const FNV1_PRIME: i32 = 0x0100_0193;
+
+#[proc_macro_derive(IgniteObj, attributes(type_id))]
 pub fn derive_ignite_obj(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse_macro_input!(item as DeriveInput);
+    let type_name = &input.ident;
 
-    let type_name = &input.ident; // name of the struct
+    // Get the type ID from attribute or calculate it
+    let type_id = get_type_id(&input);
+
     let output = match input.data {
         Data::Struct(ref st) => match st.fields {
             Fields::Named(ref fields) => {
-                let write_tokens = impl_write_type(type_name, fields);
-                let read_tokens = impl_read_type(type_name, fields);
+                let write_tokens = impl_write_type(type_name, fields, type_id);
+                let read_tokens = impl_read_type(type_name, fields, type_id);
 
                 quote! {
                     #write_tokens
                     #read_tokens
+
+                    impl #type_name {
+                        pub const fn type_id() -> i32 {
+                            #type_id
+                        }
+                    }
                 }
             }
             _ => quote_spanned! { st.fields.span() => compile_error!("Named struct expected!");},
@@ -27,32 +41,29 @@ pub fn derive_ignite_obj(item: proc_macro::TokenStream) -> proc_macro::TokenStre
     proc_macro::TokenStream::from(output)
 }
 
-
-
-
-#[proc_macro_attribute]
-pub fn type_id(args: proc_macro::TokenStream, input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let type_id = syn::parse_macro_input!(args as syn::LitInt);
-    let input = syn::parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-
-    // Only generate the impl block, not the struct again
-    proc_macro::TokenStream::from(quote! {
-        #input
-
-        impl #name {
-            pub const fn type_id() -> i32 {
-                #type_id
+/// Calculate type ID from attribute or type name
+fn get_type_id(input: &DeriveInput) -> i32 {
+    // First check for explicit type ID attribute
+    for attr in &input.attrs {
+        if attr.path.is_ident("type_id") {
+            if let Ok(meta) = attr.parse_meta() {
+                if let syn::Meta::NameValue(meta_name_value) = meta {
+                    if let syn::Lit::Int(lit_int) = meta_name_value.lit {
+                        if let Ok(value) = lit_int.base10_parse::<i32>() {
+                            return value;
+                        }
+                    }
+                }
             }
         }
-    })
+    }
+
+    // If no explicit type ID is provided, calculate it using the type name
+    string_to_java_hashcode(&input.ident.to_string())
 }
 
-
-
 /// Implements ignite_rs::WritableType trait
-fn impl_write_type(type_name: &Ident, fields: &FieldsNamed) -> TokenStream {
-    let type_id: i32 = get_type_id(type_name);
+fn impl_write_type(type_name: &Ident, fields: &FieldsNamed, type_id: i32) -> TokenStream {
     let schema_id = get_schema_id(fields);
 
     let fields_schema = fields.named.iter().map(|f| {
@@ -75,7 +86,7 @@ fn impl_write_type(type_name: &Ident, fields: &FieldsNamed) -> TokenStream {
         impl ignite_rs::WritableType for #type_name {
             fn write(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
                 ignite_rs::protocol::write_u8(writer, ignite_rs::protocol::TypeCode::ComplexObj as u8)?;
-                ignite_rs::protocol::write_u8(writer,1)?; //version. always 1
+                ignite_rs::protocol::write_u8(writer, 1)?; //version. always 1
                 ignite_rs::protocol::write_u16(writer, ignite_rs::protocol::FLAG_USER_TYPE|ignite_rs::protocol::FLAG_HAS_SCHEMA)?; //flags
                 ignite_rs::protocol::write_i32(writer, #type_id)?; //type_id
 
@@ -92,7 +103,6 @@ fn impl_write_type(type_name: &Ident, fields: &FieldsNamed) -> TokenStream {
                 ignite_rs::protocol::write_i32(writer, ignite_rs::protocol::COMPLEX_OBJ_HEADER_LEN + fields.len() as i32)?; //schema offset
                 writer.write_all(&fields)?; //object fields
                 writer.write_all(&schema)?; //schema
-                // no raw_data_offset written
                 Ok(())
             }
 
@@ -107,8 +117,7 @@ fn impl_write_type(type_name: &Ident, fields: &FieldsNamed) -> TokenStream {
 }
 
 /// Implements ReadableType trait
-fn impl_read_type(type_name: &Ident, fields: &FieldsNamed) -> TokenStream {
-    let exp_type_id: i32 = get_type_id(type_name);
+fn impl_read_type(type_name: &Ident, fields: &FieldsNamed, type_id: i32) -> TokenStream {
     let fields_count = fields.named.len();
 
     let fields_read = fields.named.iter().map(|f| {
@@ -127,7 +136,7 @@ fn impl_read_type(type_name: &Ident, fields: &FieldsNamed) -> TokenStream {
     });
 
     quote! {
-            impl ignite_rs::ReadableType for #type_name {
+        impl ignite_rs::ReadableType for #type_name {
             fn read_unwrapped(type_code: ignite_rs::protocol::TypeCode, reader: &mut impl std::io::Read) -> ignite_rs::error::IgniteResult<Option<Self>> {
                 let value: Option<Self> = match type_code {
                     ignite_rs::protocol::TypeCode::Null => None,
@@ -145,10 +154,10 @@ fn impl_read_type(type_name: &Ident, fields: &FieldsNamed) -> TokenStream {
                             return Err(ignite_rs::error::IgniteError::from("Schema offset=4 is expected!"));
                         }
 
-                        let type_id = ignite_rs::protocol::read_i32(reader)?; // read and check type_id
-                        if type_id != #exp_type_id {
+                        let received_type_id = ignite_rs::protocol::read_i32(reader)?; // read and check type_id
+                        if received_type_id != #type_id {
                             return Err(ignite_rs::error::IgniteError::from(
-                                format!("Unknown type id! {} expected!", #exp_type_id).as_str(),
+                                format!("Type ID mismatch: expected {}, got {}", #type_id, received_type_id).as_str(),
                             ));
                         }
 
@@ -199,32 +208,10 @@ fn get_schema_id(fields: &FieldsNamed) -> i32 {
         })
 }
 
-
-#[proc_macro_attribute]
-/// Java-like hashcode of type's name
-pub fn get_type_id(input: &DeriveInput) -> i32 {
-    // First check for explicit type ID attribute
-    for attr in &input.attrs {
-        if attr.path.is_ident("type_id") {  // Access path directly as a field
-            if let Ok(lit) = attr.parse_args::<syn::LitInt>() {
-                return lit.base10_parse().unwrap_or_else(|_| string_to_java_hashcode(&input.ident.to_string()));
-            }
-        }
-    }
-    // Fall back to computing hash of type name
-    string_to_java_hashcode(&input.ident.to_string())
-}
-
-
-/// FNV1 hash offset basis
-const FNV1_OFFSET_BASIS: i32 = 0x811C_9DC5_u32 as i32;
-/// FNV1 hash prime
-const FNV1_PRIME: i32 = 0x0100_0193;
-
 /// Converts string into Java-like hash code
 fn string_to_java_hashcode(value: &str) -> i32 {
     let mut hash: i32 = 0;
-    for char in value.chars().into_iter() {
+    for char in value.chars() {
         hash = 31i32.overflowing_mul(hash).0 + char as i32;
     }
     hash
